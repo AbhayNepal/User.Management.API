@@ -90,8 +90,8 @@ namespace User.Management.API.Controllers
                 new Response { Status = "Error", Message = "This User doesnot exist!." });
 
         }
+        //adding a comment for commit
 
-    
     }
 }
 
