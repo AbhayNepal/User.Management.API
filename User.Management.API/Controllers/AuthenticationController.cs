@@ -11,6 +11,7 @@ using Microsoft.IdentityModel.Tokens;
 using Newtonsoft.Json.Linq;
 using System.IdentityModel.Tokens.Jwt;
 using System.Text;
+using Dundas.BI.AccountServices;
 
 namespace User.Management.API.Controllers
 {
@@ -19,13 +20,15 @@ namespace User.Management.API.Controllers
     public class AuthenticationController : ControllerBase
     {
         private readonly UserManager<IdentityUser> _userManager;
+        private readonly SignInManager<IdentityUser> _signInManager;
         private readonly RoleManager<IdentityRole> _roleManager;
         private readonly IConfiguration _configuration;
         private readonly IEmailService _emailService;
 
 
-        public AuthenticationController(UserManager<IdentityUser> userManager, RoleManager<IdentityRole> roleManager, IConfiguration configuration, IEmailService emailService)
+        public AuthenticationController(UserManager<IdentityUser> userManager, RoleManager<IdentityRole> roleManager, IConfiguration configuration, IEmailService emailService, SignInManager<IdentityUser> signInManager)
         {
+            _signInManager = signInManager;
             _emailService = emailService;
             _userManager = userManager;
             _roleManager = roleManager;
@@ -102,9 +105,25 @@ namespace User.Management.API.Controllers
         {
             //checking the user
             var user = await _userManager.FindByNameAsync(loginModel.Username);
+
+            //Implement 2FA before providing with the login token
+            if (user.TwoFactorEnabled)
+            {
+                await _signInManager.SignOutAsync();
+                await _signInManager.PasswordSignInAsync(user, loginModel.Password, false, true);
+                var token = await _userManager.GenerateTwoFactorTokenAsync(user, "Email");
+
+                var message = new Message(new string[] { user.Email! }, "OTP for your login!", token);
+                _emailService.SendEmail(message);
+
+                return StatusCode(StatusCodes.Status200OK,
+                    new Response { Status = "Success", Message = $"OTP Sent to you email {user.Email}" });
+            }
+
             //checking the password
             if (user != null && await _userManager.CheckPasswordAsync(user, loginModel.Password))
             {
+
                 //claimlist creation
                 var authClaims = new List<Claim>
                 {
@@ -119,6 +138,8 @@ namespace User.Management.API.Controllers
                 {
                     authClaims.Add(new Claim(ClaimTypes.Role, role));
                 }
+
+
                 //generate the token with the names
                 var jwtToken = GetToken(authClaims);
 
@@ -126,15 +147,64 @@ namespace User.Management.API.Controllers
                 return Ok(new
                 {
                     token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
-                expiration = jwtToken.ValidTo
+                    expiration = jwtToken.ValidTo
                 });
-                
-               
+
+
             }
             return Unauthorized();
 
 
         }
+
+        [HttpPost]
+        [Route("login-2FA")]
+        public async Task<IActionResult> LoginWithOTP(string code, string username)
+        {
+            var user = await _userManager.FindByNameAsync(username);
+            var signIn = await _signInManager.TwoFactorSignInAsync("Email", code, false, false);
+            if (signIn.Succeeded)
+            {
+                if (user != null)
+                {
+
+                    //claimlist creation
+                    var authClaims = new List<Claim>
+                {
+                    new Claim(ClaimTypes.Name, user.UserName),
+                    new Claim(JwtRegisteredClaimNames.Jti,Guid.NewGuid().ToString()),
+
+                };
+
+                    //we add role to the claim list
+                    var userRoles = await _userManager.GetRolesAsync(user);
+                    foreach (var role in userRoles)
+                    {
+                        authClaims.Add(new Claim(ClaimTypes.Role, role));
+                    }
+
+
+                    //generate the token with the names
+                    var jwtToken = GetToken(authClaims);
+
+                    //returning the token
+                    return Ok(new
+                    {
+                        token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
+                        expiration = jwtToken.ValidTo
+                    });
+
+
+                }
+
+            }
+            return StatusCode(StatusCodes.Status404NotFound,
+                new Response { Status = "Success", Message = $"Invalid Token" });
+        }
+
+
+
+
         private JwtSecurityToken GetToken(List<Claim> authClaims)
         {
             var authSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JWT:Secret"]));
@@ -148,7 +218,9 @@ namespace User.Management.API.Controllers
             return token;
 
         }
+
     }
+
 }
 
 
