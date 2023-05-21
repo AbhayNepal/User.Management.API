@@ -12,6 +12,9 @@ using Newtonsoft.Json.Linq;
 using System.IdentityModel.Tokens.Jwt;
 using System.Text;
 using Dundas.BI.AccountServices;
+using Microsoft.AspNetCore.Authorization;
+using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.Mvc.Abstractions;
 
 namespace User.Management.API.Controllers
 {
@@ -35,6 +38,7 @@ namespace User.Management.API.Controllers
             _configuration = configuration;
         }
         [HttpPost]
+        [Route("register")]
         public async Task<IActionResult> Register([FromBody] RegisterUser registerUser, string role)
         {
             //check user exist
@@ -111,17 +115,18 @@ namespace User.Management.API.Controllers
             {
                 await _signInManager.SignOutAsync();
                 await _signInManager.PasswordSignInAsync(user, loginModel.Password, false, true);
-                var token = await _userManager.GenerateTwoFactorTokenAsync(user, "Email");
+           
+                
+                    var token = await _userManager.GenerateTwoFactorTokenAsync(user, "Email");
 
-                var message = new Message(new string[] { user.Email! }, "OTP for your login!", token);
-                _emailService.SendEmail(message);
+                    var message = new Message(new string[] { user.Email! }, "OTP for your login!", token);
+                    _emailService.SendEmail(message);
 
-                return StatusCode(StatusCodes.Status200OK,
-                    new Response { Status = "Success", Message = $"OTP Sent to you email {user.Email}" });
+                    return StatusCode(StatusCodes.Status200OK,
+                        new Response { Status = "Success", Message = $"OTP Sent to you email {user.Email}" });
             }
-
             //checking the password
-            if (user != null && await _userManager.CheckPasswordAsync(user, loginModel.Password))
+            if (user != null && await _userManager.CheckPasswordAsync(user,loginModel.Password))
             {
 
                 //claimlist creation
@@ -172,7 +177,7 @@ namespace User.Management.API.Controllers
                     var authClaims = new List<Claim>
                 {
                     new Claim(ClaimTypes.Name, user.UserName),
-                    new Claim(JwtRegisteredClaimNames.Jti,Guid.NewGuid().ToString()),
+                    new Claim(JwtRegisteredClaimNames.Jti,Guid.NewGuid().ToString()),   
 
                 };
 
@@ -199,10 +204,28 @@ namespace User.Management.API.Controllers
 
             }
             return StatusCode(StatusCodes.Status404NotFound,
-                new Response { Status = "Success", Message = $"Invalid Token" });
+                new Response { Status = "Error", Message = $" Invalid Token" });
         }
 
 
+
+        [HttpPost("Forgot-Password")]
+        [AllowAnonymous]
+
+        public async Task<IActionResult> ForgotPassword([Required] string email)
+        {
+            var user = await _userManager.FindByEmailAsync(email);
+            if(user != null)
+            {
+                var token = await _userManager.GeneratePasswordResetTokenAsync(user);
+                var forgotPasswordlink = Url.Action(nameof(ResetPassword),"Authentication", new { token , email=user.Email},Request.Scheme);
+                var message = new Message(new string[] { user.Email! }, "Reset Link", forgotPasswordlink!);
+                _emailService.SendEmail(message);
+                return StatusCode(StatusCodes.Status200OK,
+                    new Response { Status = "Success", Message = $"Reset link sent to your email {user.Email}" });
+            }
+            return StatusCode(StatusCodes.Status400BadRequest, new Response { Status = "Error", Message = $"Couldnot send Link to email, please try again!" });     
+        }
 
 
         private JwtSecurityToken GetToken(List<Claim> authClaims)
@@ -217,6 +240,48 @@ namespace User.Management.API.Controllers
             );
             return token;
 
+        }
+
+
+        [HttpPost("Reset-Password")]
+        [AllowAnonymous]
+
+        public async Task<IActionResult> ResetPassword(ResetPassword resetPassword)
+        {
+            var user = await _userManager.FindByEmailAsync(resetPassword.Email);
+            if (user != null)
+            {
+                var resetPassResult = await _userManager.ResetPasswordAsync(user,resetPassword.Token,resetPassword.Password);
+                if(!resetPassResult.Succeeded)
+                {
+                    foreach (var error in resetPassResult.Errors)
+                    {
+                        ModelState.AddModelError(error.Code, error.Description);
+                    }
+                    return Ok(ModelState);
+                }
+                return StatusCode(StatusCodes.Status200OK,
+                    new Response { Status = "Success", Message = $"Password has been changed for {user.UserName}" });
+               
+     
+            }
+            return StatusCode(StatusCodes.Status400BadRequest, new Response { Status = "Error", Message = $"Cannot find user {resetPassword.Email}" });
+        }
+
+
+        [HttpGet("reset-password")]
+
+        public async Task<IActionResult> ResetPassword(string token, string email)
+        {
+            var model = new ResetPassword
+            {
+                Token = token,
+                Email = email
+            };
+            return Ok(new
+            {
+                model
+            });
         }
 
     }
